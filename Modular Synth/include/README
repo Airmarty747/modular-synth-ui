@@ -1,0 +1,46 @@
+
+This directory is intended for project header files for the PocketChord synthesizer.
+
+A header file is a file containing C/C++ declarations, classes, and macro definitions to be shared between several project source files. You request the use of a header file in your project source file located in the `src` folder by including it with the preprocessing directive `#include`.
+
+```cpp
+// src/main.cpp
+#include "SynthState.h"
+#include "InputManager.h"
+#include "Looper.h"
+#include "ShareManager.h"
+#include "DummyMemory.h"
+#include "page.h"
+
+void setup() {
+    // Initialization code
+}
+
+void loop() {
+    // Main engine loop
+}
+
+```
+
+This project's `include` folder contains the core architectural blueprints and hardware abstraction layers:
+
+* **`SynthState.h`**: Manages global configuration parameters including root keys, scales, octave offsets, active instruments, BPM, and articulation bounds.
+* **`InputManager.h`**: Scans the 4x4 matrix keypad with debouncing filters, processes shift modifiers, and reads analog joystick inputs.
+* **`Looper.h`**: Records, logs, and serializes time-stamped musical performance events into active memory buffers.
+* **`ShareManager.h`**: Manages asynchronous serial communication over UART pins for device-to-device track sharing.
+* **`IStorage.h`**: Defines the pure virtual interface contract for persistent memory management without tied hardware dependencies.
+* **`DummyMemory.h`**: Implements a simulation storage driver for debugging and validation before physical flash modules are integrated.
+* **`page.h`**: Embeds the PROGMEM-allocated HTML/CSS/JS asset bundle to serve the browser graphical user interface.
+
+Including a header file produces the same results as copying the header file into each source file that needs it. Such copying would be time-consuming and error-prone. With a header file, the related declarations appear in only one place. If they need to be changed, they can be changed in one place, and programs that include the header file will automatically use the new version when next recompiled. The header file eliminates the labor of finding and changing all the copies as well as the risk that a failure to find one copy will result in inconsistencies within a program.
+
+In C and C++, the convention is to give header files names that end with `.h`.
+
+Read more about using header files in official GCC documentation:
+
+* Include Syntax
+* Include Operation
+* Once-Only Headers
+* Computed Includes
+
+[https://gcc.gnu.org/onlinedocs/cpp/Header-Files.html]
