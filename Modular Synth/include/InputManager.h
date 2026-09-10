@@ -98,6 +98,21 @@ public:
             }
         }
 
+
+            // 2. Scan Analog Joystick
+            int rawX = analogRead(pinVrx) - 2048;
+            int rawY = analogRead(pinVry) - 2048;
+            
+            int x = (rawX > deadzone) ? 1 : (rawX < -deadzone) ? -1 : 0;
+            int y = (rawY > deadzone) ? 1 : (rawY < -deadzone) ? -1 : 0;
+
+            if (x != lastX || y != lastY) {
+                lastX = x;
+                lastY = y;
+                Serial.printf("Joystick moved -> X: %d, Y: %d\n", x, y);
+            }
+        }
+
     bool hasNewAction() {
         return newActionReady;
     }
