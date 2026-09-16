@@ -16,6 +16,10 @@ public:
         octaveOffset = 0;     // Default center octave
         instrumentIdx = 0;    // Default to Warm Pad
         bpm = 100;            // Default tempo
+        articulation(1.0f) 
+    {
+        // The constructor body is now intentionally empty
+    }
     }
 
     // --- State Modifiers ---
