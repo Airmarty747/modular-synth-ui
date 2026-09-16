@@ -21,9 +21,14 @@ private:
     uint32_t keyTime[16] = {0};
     const unsigned long debounceDelay = 8; // 8ms debounce filter
 
+    // Joystick state tracking
     int lastX = 0;
     int lastY = 0;
     const int deadzone = 900;
+
+    // NEW: Joystick cooldown variables to prevent values from scrolling too fast
+    uint32_t lastJoyTrigger = 0;
+    const unsigned long joyCooldown = 250; // 250ms delay between joystick clicks
 
 public:
     InputManager() {
@@ -48,8 +53,9 @@ public:
 
         Serial.println("InputManager: Matrix rows/cols and joystick initialized.");
     }
-
-    void scanHardware() {
+    
+    // NEW: Passed SynthState reference so the joystick can modify it
+    void scanHardware(SynthState& synth) {
             uint32_t now = millis();
 
             // 1. Scan 4x4 Button Matrix
@@ -91,10 +97,18 @@ public:
             int x = (rawX > deadzone) ? 1 : (rawX < -deadzone) ? -1 : 0;
             int y = (rawY > deadzone) ? 1 : (rawY < -deadzone) ? -1 : 0;
 
-            if (x != lastX || y != lastY) {
+            // NEW: Only trigger if joystick is moved AND the cooldown has passed
+            if ((x != 0 || y != 0) && (now - lastJoyTrigger > joyCooldown)) {
                 lastX = x;
                 lastY = y;
-                Serial.printf("Joystick moved -> X: %d, Y: %d\n", x, y);
+                lastJoyTrigger = now;
+
+                handleJoystick(x, y, synth);
+            } else if (x == 0 && y == 0) {
+            // Reset cooldown instantly if the joystick is let go so the next click is responsive
+            lastJoyTrigger = 0; 
+            lastX = 0;
+            lastY = 0;
             }
         }
 
@@ -107,6 +121,29 @@ public:
         return lastPressedButton;
     }
 
+    // NEW: Method to route joystick commands to the SynthState
+    void handleJoystick(int x, int y, SynthState& synth) {
+        if (isShiftHeld) {
+            // SHIFT + JOYSTICK UP/DOWN = Change BPM
+            if (y == 1) synth.setBpm(synth.getBpm() + 5);
+            if (y == -1) synth.setBpm(synth.getBpm() - 5);
+            
+            // SHIFT + JOYSTICK LEFT/RIGHT = Change Scale
+            if (x == 1) synth.setScale("major");
+            if (x == -1) synth.setScale("minor");
+        } else {
+            // JOYSTICK UP/DOWN = Change Instrument
+            if (y == 1) synth.setInstrument(synth.getInstrumentIndex() + 1);
+            if (y == -1) synth.setInstrument(synth.getInstrumentIndex() - 1);
+            
+            // JOYSTICK LEFT/RIGHT = Change Root Key (C, C#, D, etc.)
+            if (x == 1) synth.setKey(synth.getKeyRoot() + 1);
+            if (x == -1) synth.setKey(synth.getKeyRoot() - 1);
+        }
+        
+        Serial.printf("Joy trigger -> X: %d, Y: %d\n", x, y);
+    }
+    
     void handleButtonPress(int buttonId, SynthState& synth, Looper& looper) {
         if (isShiftHeld) {
             switch (buttonId) {
@@ -120,6 +157,12 @@ public:
                     break;
                 case 3:
                     looper.saveCurrentLoop(1); 
+                    break;
+                    case 4: 
+                    looper.toggleRecording();
+                    break;
+                case 5:
+                    looper.togglePlayback();
                     break;
                 default:
                     Serial.println("Shift Action: Unmapped button.");
