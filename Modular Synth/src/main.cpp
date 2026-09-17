@@ -26,6 +26,9 @@ void setup() {
     input.begin();
     share.begin();
 
+    pinMode(47, OUTPUT);
+    digitalWrite(47, HIGH); // Pull HIGH to wake up the amplifier
+    
     Serial.println("PocketChord Boot Sequence Complete.");
     Serial.println("Running in standalone hardware mode.");
 }

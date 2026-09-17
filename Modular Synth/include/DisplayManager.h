@@ -20,6 +20,9 @@ public:
     DisplayManager() : u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE) {}
 
     void begin() {
+        // Set SDA to 40 and SCL to 39 based on your hardware config
+        Wire.begin(40, 39); // SDA, SCL
+
         u8g2.begin();
         u8g2.clearBuffer();
         
