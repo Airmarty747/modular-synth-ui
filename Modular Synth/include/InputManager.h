@@ -5,6 +5,7 @@
 #include <math.h> // For joystick trigonometry
 #include "SynthState.h"
 #include "Looper.h"
+#include "AudioEngine.h"
 
 class InputManager {
 private:
@@ -45,10 +46,14 @@ public:
             Serial.println("Error: MPR121 keypad not found on I2C bus!");
         } else {
             Serial.println("MPR121 Keypad Initialized.");
+            // Apply the custom hardware sensitivity thresholds from your old config.h
+            // Touch Threshold = 12, Release Threshold = 6
+            cap.setThresholds(12, 6); 
+            Serial.println("MPR121 Custom Thresholds Applied.");
         }
     }
 
-    void scanHardware(SynthState& synth) {
+    void scanHardware(SynthState& synth, AudioEngine& audio) {
         uint32_t now = millis();
 
         // 1. SCAN SHIFT BUTTON (Physical Pin 41)
@@ -58,13 +63,21 @@ public:
             Serial.println(isShiftHeld ? "Shift key engaged." : "Shift key released.");
         }
 
-        // 2. SCAN MPR121 CAPACITIVE KEYPAD (12 Electrodes)
+      // 2. SCAN MPR121 CAPACITIVE KEYPAD (12 Electrodes)
         uint16_t currTouched = cap.touched();
         for (uint8_t i = 0; i < 12; i++) {
-            // If button *is* touched now, and *wasn't* touched last frame
+            // Note ON (Newly Touched)
             if ((currTouched & _BV(i)) && !(lastTouched & _BV(i))) {
+                Serial.printf("InputManager: Pad %d PRESSED\n", i); // Confirm the press
+                audio.playPad(i, synth); // Tell the audio engine to play the note for this pad
                 lastPressedButton = i;
-                newActionReady = true;
+                newActionReady = true; // 2. Required so the Looper logs the chord
+            }
+            // Note OFF (Newly Released)
+            else if (!(currTouched & _BV(i)) && (lastTouched & _BV(i))) {
+                Serial.printf("InputManager: Pad %d RELEASED\n", i); // Confirm the release
+                // Tell the audio engine to trigger the release envelope for this pad
+                audio.stopNote(i, synth); 
             }
         }
         lastTouched = currTouched;

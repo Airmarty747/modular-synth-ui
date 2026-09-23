@@ -6,7 +6,8 @@
 #include "Looper.h"
 #include "ShareManager.h"
 #include "DummyMemory.h"
-#include "DisplayManager.h" // <-- 1. Include the blueprint
+#include "DisplayManager.h" // <-- 1. Include the blueprint for the OLED Screen
+#include "AudioEngine.h"  // <-- 1. Include the audio engine
 
 // 2. GLOBAL INSTANTIATIONS
 SynthState synth;
@@ -15,6 +16,7 @@ ShareManager share;
 DummyMemory hardwareCache;
 Looper looper(&hardwareCache);
 DisplayManager screen; // <-- 2. Declare the screen object here
+AudioEngine audio;
 
 // 3. THE BOOT SEQUENCE
 void setup() {
@@ -26,6 +28,9 @@ void setup() {
     input.begin();
     share.begin();
 
+    // Boots the FreeRTOS audio task and wakes up the amplifier
+    audio.begin();
+
     pinMode(47, OUTPUT);
     digitalWrite(47, HIGH); // Pull HIGH to wake up the amplifier
     
@@ -36,7 +41,7 @@ void setup() {
 // 4. THE ENGINE
 void loop() {
     // STEP A: Read the physical world
-    input.scanHardware(synth); // Pass the synth state to allow joystick adjustments
+    input.scanHardware(synth, audio); // Pass the synth state to allow joystick adjustments
 
     // STEP B: Process user actions
     if (input.hasNewAction()) {
