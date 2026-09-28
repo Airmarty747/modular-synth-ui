@@ -15,7 +15,7 @@ private:
     // Hardware Pins based on your config.h
     const int pinVrx = 1;
     const int pinVry = 2;
-    const int pinShift = 41; 
+    const int pinShift = 41
 
     bool isShiftHeld = false;
     
