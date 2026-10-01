@@ -21,6 +21,16 @@
  *   shared rail sagging on every kick is heard as the whole mix ducking.
  *   PCM5102 DAC (headphones): its SCK MUST go to GND. XSMT is optional.
  *
+ * KCX_BT_EMITTER Bluetooth transmitter, fed from the PCM5102's analogue out
+ * (the L / G / R holes on its bottom edge -- NEVER the amp's speaker
+ * terminals, which are bridge-tied PWM with no ground):
+ *   +5V -> 5Vin   PGND -> GND   IN_L -> PCM L   IN_R -> PCM R   AGND -> PCM G
+ *   5Vin only outputs USB power because the IN-OUT and USB-OTG solder jumpers
+ *   are bridged. So: power from the USB port, ONE cable at a time, and never
+ *   feed 5Vin from elsewhere while USB is plugged in.
+ *   No code involved -- Output = headphones/both reaches it. Expect ~0.2 s of
+ *   Bluetooth latency.
+ *
  * KY-023 dual-axis joystick (3.3V ONLY -- 5V would exceed the ADC input):
  *   VRx -> GPIO 1      VRy -> GPIO 2      SW -> GPIO 48 (internal pull-up)
  *
