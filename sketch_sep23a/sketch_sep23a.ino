@@ -2672,6 +2672,12 @@ static void stripService(uint16_t touched) {
 
 // ================================================================ SETUP =====
 void setup() {
+  // Never wait on the USB serial. Powered from the native USB port (which the
+  // 5Vin jumper mod now requires) with a PC on the other end but no monitor
+  // open, the host counts as "connected", so every print blocked until the
+  // TX timeout -- the screen took ~30 s to come up and stopped following the
+  // buttons. With a zero timeout, unread log text is simply dropped.
+  Serial.setTxTimeoutMs(0);
   Serial.begin(115200);
   delay(400);
   Serial.println("\n=== Buttonbox ===");
