@@ -1,89 +1,59 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 
-// Include your custom engine files
+// 1. IMPORT BLUEPRINTS & TESTING LAYERS
 #include "SynthState.h"
 #include "InputManager.h"
-#include "Looper.h" 
+#include "Looper.h"
+#include "ShareManager.h"
+#include "DummyMemory.h"
+#include "DisplayManager.h" // <-- 1. Include the blueprint for the OLED Screen
+#include "AudioEngine.h"  // <-- 1. Include the audio engine
 
-// --- OLED Screen Settings ---
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-// 0x3C is the standard I2C address for most 128x64 OLEDs
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-
-// --- Global Engine Objects ---
+// 2. GLOBAL INSTANTIATIONS
 SynthState synth;
 InputManager input;
-Looper looper; // Assuming you have a basic Looper class, otherwise comment this out!
+ShareManager share;
+DummyMemory hardwareCache;
+Looper looper(&hardwareCache);
+DisplayManager screen; // <-- 2. Declare the screen object here
+AudioEngine audio;
 
-// --- UI Drawing Function ---
-void updateOLED() {
-    display.clearDisplay();
-    display.setTextSize(1);
-
-    // 1. Draw Header
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("--- POCKETCHORD ---");
-    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
-
-    // 2. Draw Menu Item 0: Key Root
-    // If selected, invert colors (Black text on White background)
-    if (input.selectedMenuItem == 0) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    else display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.setCursor(0, 15);
-    display.printf("Root Key: %d  ", synth.getKeyRoot());
-
-    // 3. Draw Menu Item 1: Scale
-    if (input.selectedMenuItem == 1) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    else display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.setCursor(0, 25);
-    display.printf("Scale: %s  ", synth.getScaleName().c_str());
-
-    // 4. Draw Menu Item 2: Articulation
-    if (input.selectedMenuItem == 2) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    else display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.setCursor(0, 35);
-    display.printf("Artic: %.1f  ", synth.getArticulation());
-
-    // 5. Draw Footer (Always white on black)
-    display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.drawLine(0, 50, 128, 50, SSD1306_WHITE);
-    display.setCursor(0, 54);
-    display.printf("Octave Offset: %d", synth.getOctaveOffset());
-
-    // Push the buffer to the physical screen
-    display.display();
-}
-
-// --- Boot Sequence ---
+// 3. THE BOOT SEQUENCE
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(1000);
 
-    // Initialize OLED Display
-    if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-        Serial.println("OLED allocation failed! Check wiring (SDA/SCL).");
-        for(;;); // Halt execution if screen fails
-    }
-    
-    // Initialize Hardware Matrix and Joystick
+    // Initialize Hardware Managers
+    screen.begin(); 
     input.begin();
+    share.begin();
 
-    Serial.println("PocketChord Hardware Booted Successfully!");
+    // Boots the FreeRTOS audio task and wakes up the amplifier
+    audio.begin();
+
+    pinMode(47, OUTPUT);
+    digitalWrite(47, HIGH); // Pull HIGH to wake up the amplifier
+    
+    Serial.println("PocketChord Boot Sequence Complete.");
+    Serial.println("Running in standalone hardware mode.");
 }
 
 // --- The Master Engine ---
 void loop() {
-    // 1. Read the physical world (this directly triggers synth notes!)
-    input.scanHardware(synth, looper);
+    // STEP A: Read the physical world (pads play notes, Shift + pads drive the Looper)
+    input.scanHardware(synth, audio, looper);
 
-    // 2. Refresh the physical display to match the current state
-    updateOLED();
-
-    // 3. Short delay for stability
-    delay(10); 
+    // STEP B: Check for incoming shared tracks via aux cable
+    share.listenForIncomingTrack(looper);
+    
+    // STEP C: Send any due looper events to the audio engine on their own voices
+    LoopEvent evt;
+    while (looper.updatePlayback(evt)) {
+        uint8_t src = evt.buttonId + LOOP_VOICE_OFFSET;
+        if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
+        else            audio.stopNote(src, synth);
+    }
+    
+    // STEP D: Update the UI
+    screen.update(synth, looper);
 }
