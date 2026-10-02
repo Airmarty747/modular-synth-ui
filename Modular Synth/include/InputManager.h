@@ -1,7 +1,6 @@
 #pragma once
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_MPR121.h>
 #include <math.h> // For joystick trigonometry
 #include "SynthState.h"
 #include "Looper.h"
@@ -14,12 +13,79 @@ public:
     const int MAX_MENU_ITEMS = 2; // 0=Root, 1=Scale, 2=Articulation
 
 private:
-    Adafruit_MPR121 cap = Adafruit_MPR121();
+    // The MPR121 is driven by direct register writes rather than through
+    // Adafruit_MPR121. That library's begin() reads CONFIG2 after the soft
+    // reset and refuses to continue unless it reads back exactly 0x24 -- and
+    // when it refuses it has already parked the chip in stop mode with every
+    // electrode disabled, so touched() then returns 0 forever. The sketch that
+    // works on this hardware writes the registers blindly and never asks the
+    // chip to prove its identity, so that is what happens here too.
+    static const uint8_t MPR_ADDR       = 0x5A;
+    static const uint8_t R_TOUCH_STATUS = 0x00;
+    static const uint8_t R_DEBOUNCE     = 0x5B;
+    static const uint8_t R_CONFIG1      = 0x5C;
+    static const uint8_t R_CONFIG2      = 0x5D;
+    static const uint8_t R_ECR          = 0x5E;
+    static const uint8_t R_SOFTRESET    = 0x80;
+
+    bool     padsOk = false;
     uint16_t lastTouched = 0;
+
+    bool mprWrite(uint8_t reg, uint8_t val) {
+        Wire.beginTransmission(MPR_ADDR);
+        Wire.write(reg);
+        Wire.write(val);
+        return Wire.endTransmission() == 0;
+    }
+
+    // endTransmission(false) keeps the bus held for a repeated START. Sending a
+    // STOP instead makes the MPR121 rewind its address pointer to 0x00, after
+    // which every read quietly comes back as touch status whatever you asked
+    // for -- which looks exactly like pads that never change.
+    int mprRead16(uint8_t reg) {
+        Wire.beginTransmission(MPR_ADDR);
+        Wire.write(reg);
+        if (Wire.endTransmission(false) != 0) return -1;
+        if (Wire.requestFrom((int)MPR_ADDR, 2) != 2) return -1;
+        uint8_t lo = Wire.read();
+        uint8_t hi = Wire.read();
+        return lo | (hi << 8);
+    }
+
+    bool mprInit() {
+        if (!mprWrite(R_SOFTRESET, 0x63)) return false;   // the one write that must land
+        delay(10);
+        mprWrite(R_ECR, 0x00);                            // stop mode, required to configure
+
+        mprWrite(0x2B, 0x01); mprWrite(0x2C, 0x01);       // baseline filter, rising
+        mprWrite(0x2D, 0x0E); mprWrite(0x2E, 0x00);
+        mprWrite(0x2F, 0x01); mprWrite(0x30, 0x05);       // falling
+        mprWrite(0x31, 0x01); mprWrite(0x32, 0x00);
+        mprWrite(0x33, 0x00); mprWrite(0x34, 0x00); mprWrite(0x35, 0x00);  // touched
+
+        for (uint8_t e = 0; e < 12; e++) {
+            mprWrite(0x41 + e * 2, 12);                   // touch threshold
+            mprWrite(0x42 + e * 2, 6);                    // release threshold
+        }
+
+        mprWrite(R_DEBOUNCE, 0x00);
+        mprWrite(R_CONFIG1,  0x10);                       // 16 uA charge current
+        mprWrite(R_CONFIG2,  0x20);                       // 0.5 us charge, 4 samples, 1 ms
+        mprWrite(R_ECR,      0x8F);                       // baseline tracking on + 12 electrodes
+        delay(50);                                        // let it self-calibrate
+        return true;
+    }
 
     // Hardware Pins based on your config.h
     const int pinVrx = 1;
     const int pinVry = 2;
+    // The stick module is mounted so that both axes read backwards: pushing up
+    // raises the reading instead of lowering it, and right lowers it instead of
+    // raising it. The radial maths below is written expecting the opposite, so
+    // both axes are flipped at the point of reading. Set either to false if the
+    // module is ever remounted the other way up.
+    const bool invertX = true;
+    const bool invertY = true;
     const int pinShift = 41;
 
     bool isShiftHeld = false;
@@ -46,16 +112,21 @@ public:
         // Configure Joystick Precision
         analogReadResolution(12);
 
-        // Initialize MPR121 Capacitive Touch on I2C address 0x5A
-        // Because DisplayManager already called Wire.begin(40, 39), the bus is ready!
-        if (!cap.begin(0x5A)) {
-            Serial.println("Error: MPR121 keypad not found on I2C bus!");
+        // Initialize MPR121 Capacitive Touch on I2C address 0x5A.
+        // DisplayManager already called Wire.begin(40, 39), so the bus is up;
+        // 400 kHz is what the working sketch runs it at and the MPR121 and the
+        // OLED are both happy there.
+        Wire.setClock(400000);
+
+        padsOk = mprInit();
+        if (padsOk) {
+            Serial.println("MPR121 Keypad Initialized (thresholds 12 / 6, 12 electrodes).");
+            int probe = mprRead16(R_TOUCH_STATUS);
+            Serial.print("MPR121 touch status reads back 0x");
+            Serial.print(probe < 0 ? 0xFFFF : probe & 0x0FFF, HEX);
+            Serial.println("  (0 = nothing held right now).");
         } else {
-            Serial.println("MPR121 Keypad Initialized.");
-            // Apply the custom hardware sensitivity thresholds from your old config.h
-            // Touch Threshold = 12, Release Threshold = 6
-            cap.setThresholds(12, 6); 
-            Serial.println("MPR121 Custom Thresholds Applied.");
+            Serial.println("Error: MPR121 did not acknowledge on I2C -- check SDA 40 / SCL 39 and 3V3.");
         }
     }
 
@@ -70,7 +141,12 @@ public:
         }
 
       // 2. SCAN MPR121 CAPACITIVE KEYPAD (12 Electrodes)
-        uint16_t currTouched = cap.touched();
+        if (!padsOk) return;
+        int rawTouch = mprRead16(R_TOUCH_STATUS);
+        // A failed read is not the same as nothing being held: treating -1 as
+        // "all released" would fire a note-off for every pad under your finger.
+        if (rawTouch < 0) return;
+        uint16_t currTouched = (uint16_t)(rawTouch & 0x0FFF);
         for (uint8_t i = 0; i < 12; i++) {
             // Note ON (Newly Touched)
             if ((currTouched & _BV(i)) && !(lastTouched & _BV(i))) {
@@ -93,6 +169,8 @@ public:
         // 3. SCAN ANALOG JOYSTICK (Radial Math)
         int rawX = analogRead(pinVrx) - 2048;
         int rawY = analogRead(pinVry) - 2048;
+        if (invertX) rawX = -rawX;
+        if (invertY) rawY = -rawY;
 
         handleJoystick(rawX, rawY, synth, now);
     }

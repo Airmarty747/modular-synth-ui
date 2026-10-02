@@ -333,20 +333,37 @@ public:
         
         Serial.println("AudioEngine: FreeRTOS Polyphonic Synth Booted!");
 
-        // // --- HARDWARE DIAGNOSTIC BEEP ---
-        // Serial.println("Playing diagnostic beep...");
-        
-        // // Spawn a fake event to force the speaker to play Middle C
-        // AudioEvt beep = {};
-        // beep.type = EV_NOTE_ON;
-        // beep.src = 99; // Fake pad ID
-        // beep.inst = 1; // E. Piano
-        // beep.count = 1;
-        // beep.midi[0] = 60; // Middle C
-        
-        // if (evtQ) {
-        //     xQueueSend(evtQ, &beep, 0);
-        // }
+    }
+
+    // Plays a short rising arpeggio, so you can hear at power-on that the I2S
+    // bus and the amplifier are both alive without touching a single pad.
+    // Deliberately uses explicit MIDI notes rather than playPad(): that way a
+    // silent chime points at the speaker chain only, and cannot be blamed on
+    // the pad map or on whatever key the synth happens to have booted into.
+    void bootChime() {
+        const int16_t notes[4] = { 60, 64, 67, 72 };   // C E G C, middle C upward
+        const uint8_t src0 = 90;                       // clear of pads (0-11) and looper (12-23)
+
+        for (uint8_t i = 0; i < 4; i++) {
+            AudioEvt e = {};
+            e.type    = EV_NOTE_ON;
+            e.src     = src0 + i;
+            e.inst    = 1;
+            e.count   = 1;
+            e.midi[0] = notes[i];
+            if (evtQ) xQueueSend(evtQ, &e, 0);
+            delay(170);
+        }
+
+        delay(260);
+
+        for (uint8_t i = 0; i < 4; i++) {
+            AudioEvt e = {};
+            e.type = EV_NOTE_OFF;
+            e.src  = src0 + i;
+            e.inst = 1;
+            if (evtQ) xQueueSend(evtQ, &e, 0);
+        }
     }
 
     // Pass the Pad ID (0-11) and it will map it to a MIDI note based on your SynthState

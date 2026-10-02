@@ -21,7 +21,14 @@ AudioEngine audio;
 // 3. THE BOOT SEQUENCE
 void setup() {
     Serial.begin(115200);
+    // Serial goes out over the chip's built-in USB. If nothing is reading that
+    // port, a write will otherwise sit and wait for a reader, which makes the
+    // synth look dead when it is merely talking to nobody. Zero means never
+    // wait: unread output is dropped and the music carries on.
+    Serial.setTxTimeoutMs(0);
     delay(1000);
+    Serial.println();
+    Serial.println("=== PocketChord starting ===");
 
     // Initialize Hardware Managers
     screen.begin(); 
@@ -34,8 +41,16 @@ void setup() {
     pinMode(47, OUTPUT);
     digitalWrite(47, HIGH); // Pull HIGH to wake up the amplifier
     
+    // Four notes on the way up, before anything is touched. If you hear these,
+    // the amplifier, the speaker and the I2S clocks are all good, and any
+    // silence afterwards belongs to the pads rather than the audio path.
+    Serial.println("Boot chime: playing C E G C -- you should hear four notes.");
+    audio.bootChime();
+
     Serial.println("PocketChord Boot Sequence Complete.");
     Serial.println("Running in standalone hardware mode.");
+    Serial.println("Note pads are 5-11. Pads 0-4 are controls and stay silent.");
+    Serial.println("Waiting for input...");
 }
 
 // --- The Master Engine ---
