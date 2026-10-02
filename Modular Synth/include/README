@@ -10,7 +10,7 @@ A header file is a file containing C/C++ declarations, classes, and macro defini
 #include "Looper.h"
 #include "ShareManager.h"
 #include "DummyMemory.h"
-#include "page.h"
+#include "DisplayManager.h"
 
 void setup() {
     // Initialization code
@@ -30,7 +30,7 @@ This project's `include` folder contains the core architectural blueprints and h
 * **`ShareManager.h`**: Manages asynchronous serial communication over UART pins for device-to-device track sharing.
 * **`IStorage.h`**: Defines the pure virtual interface contract for persistent memory management without tied hardware dependencies.
 * **`DummyMemory.h`**: Implements a simulation storage driver for debugging and validation before physical flash modules are integrated.
-* **`page.h`**: Embeds the PROGMEM-allocated HTML/CSS/JS asset bundle to serve the browser graphical user interface.
+* **`DisplayManager.h`**: Drives the physical 2.42" 128x64 OLED UI using the U8g2 library, translating the current SynthState into a real-time, readable on-screen interface.
 
 Including a header file produces the same results as copying the header file into each source file that needs it. Such copying would be time-consuming and error-prone. With a header file, the related declarations appear in only one place. If they need to be changed, they can be changed in one place, and programs that include the header file will automatically use the new version when next recompiled. The header file eliminates the labor of finding and changing all the copies as well as the risk that a failure to find one copy will result in inconsistencies within a program.
 
