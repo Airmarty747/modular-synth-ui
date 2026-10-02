@@ -12,7 +12,7 @@ public:
     }
 
     String loadTrack(int trackId) override {
-        return "100:4;500:5;1200:1;"; // Returning fake loop data
+        return "100:8:1;400:8:0;500:9:1;900:9:0;1200:10:1;1600:10:0;"; // Returning fake loop data
     }
 
     bool isConnected() override {

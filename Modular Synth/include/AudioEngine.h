@@ -11,6 +11,7 @@
 #define SAMPLE_RATE 32000
 #define MAX_VOICES 12
 #define AUDIO_FRAMES 256
+#define LOOP_VOICE_OFFSET 12 // Looper playback uses voice sources 12-23 so it never cuts off live pads 0-11
 const float TWO_PI_F = 2.0f * PI;
 
 // --- HARDWARE PINS ---
@@ -350,6 +351,11 @@ public:
 
     // Pass the Pad ID (0-11) and it will map it to a MIDI note based on your SynthState
     void playPad(uint8_t padId, const SynthState& synth) {
+        playPad(padId, synth, padId);
+    }
+
+    // Same as above, but tags the voices with `src` so stopNote(src) releases only them
+    void playPad(uint8_t padId, const SynthState& synth, uint8_t src) {
         // Check PadMap to ensure this is actually a chord button
         if (PADS[padId].role != ROLE_CHORD) return;
 
@@ -360,7 +366,7 @@ public:
 
         AudioEvt e = {};
         e.type = EV_NOTE_ON;
-        e.src  = padId;
+        e.src  = src;
         e.inst = synth.getInstrumentIndex();
         e.count = 4; // 3-note triad + 1 bass note
         
@@ -376,10 +382,11 @@ public:
         if (evtQ) xQueueSend(evtQ, &e, 0);
     }
 
-    void stopNote(uint8_t padId, const SynthState& synth) {
+    // Releases every voice started with this source (a Pad ID, or Pad ID + LOOP_VOICE_OFFSET)
+    void stopNote(uint8_t src, const SynthState& synth) {
         AudioEvt e = {};
         e.type = EV_NOTE_OFF;
-        e.src  = padId;
+        e.src  = src;
         e.inst = synth.getInstrumentIndex();
         if (evtQ) xQueueSend(evtQ, &e, 0);
     }

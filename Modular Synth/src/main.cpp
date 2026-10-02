@@ -18,22 +18,15 @@ Looper looper(&hardwareCache);
 DisplayManager screen; // <-- 2. Declare the screen object here
 AudioEngine audio;
 
-    // 1. Draw Header
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("--- POCKETCHORD ---");
-    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
-
-    // 2. Draw Menu Item 0: Key Root
-    // If selected, invert colors (Black text on White background)
-    if (input.selectedMenuItem == 0) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    else display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.setCursor(0, 15);
-    display.printf("Root Key: %d  ", synth.getKeyRoot());
+// 3. THE BOOT SEQUENCE
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
 
     // Initialize Hardware Managers
     screen.begin(); 
     input.begin();
+    share.begin();
 
     // Boots the FreeRTOS audio task and wakes up the amplifier
     audio.begin();
@@ -47,25 +40,20 @@ AudioEngine audio;
 
 // --- The Master Engine ---
 void loop() {
-    // STEP A: Read the physical world
-    input.scanHardware(synth, audio); // Pass the synth state to allow joystick adjustments
+    // STEP A: Read the physical world (pads play notes, Shift + pads drive the Looper)
+    input.scanHardware(synth, audio, looper);
 
-    // STEP B: Process user actions
-    if (input.hasNewAction()) {
-        int buttonId = input.getLastPressedButton();
-        input.handleButtonPress(buttonId, synth, looper);
-    }
-
-    // STEP C: Check for incoming shared tracks via aux cable
+    // STEP B: Check for incoming shared tracks via aux cable
     share.listenForIncomingTrack(looper);
     
-    // Check if the looper is playing back and has a note for us
-    int looperNote = looper.updatePlayback();
-    if (looperNote != -1) {
-        Serial.printf("Looper: Playing back button %d\n", looperNote);
-        // TODO: Send looperNote to the audio engine later
+    // STEP C: Send any due looper events to the audio engine on their own voices
+    LoopEvent evt;
+    while (looper.updatePlayback(evt)) {
+        uint8_t src = evt.buttonId + LOOP_VOICE_OFFSET;
+        if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
+        else            audio.stopNote(src, synth);
     }
     
     // STEP D: Update the UI
-    screen.update(synth,looper); // <-- Pass the looper to the screen update function
+    screen.update(synth, looper);
 }

@@ -20,7 +20,7 @@ private:
     // Hardware Pins based on your config.h
     const int pinVrx = 1;
     const int pinVry = 2;
-    const int pinShift = 41
+    const int pinShift = 41;
 
     bool isShiftHeld = false;
     
@@ -32,8 +32,9 @@ private:
     uint32_t lastJoyTrigger = 0;
     const unsigned long joyCooldown = 250; 
 
-    bool newActionReady = false;
-    int lastPressedButton = -1;
+    // Pads that started a live note, so their release always sends a note-off
+    // (even if Shift was pressed in between) and gets recorded by the Looper
+    uint16_t notePadsHeld = 0;
 
 public:
     InputManager() {}
@@ -58,7 +59,7 @@ public:
         }
     }
 
-    void scanHardware(SynthState& synth, AudioEngine& audio) {
+    void scanHardware(SynthState& synth, AudioEngine& audio, Looper& looper) {
         uint32_t now = millis();
 
         // 1. SCAN SHIFT BUTTON (Physical Pin 41)
@@ -74,15 +75,17 @@ public:
             // Note ON (Newly Touched)
             if ((currTouched & _BV(i)) && !(lastTouched & _BV(i))) {
                 Serial.printf("InputManager: Pad %d PRESSED\n", i); // Confirm the press
-                audio.playPad(i, synth); // Tell the audio engine to play the note for this pad
-                lastPressedButton = i;
-                newActionReady = true; // 2. Required so the Looper logs the chord
+                handleButtonPress(i, synth, looper, audio);
             }
             // Note OFF (Newly Released)
             else if (!(currTouched & _BV(i)) && (lastTouched & _BV(i))) {
                 Serial.printf("InputManager: Pad %d RELEASED\n", i); // Confirm the release
-                // Tell the audio engine to trigger the release envelope for this pad
-                audio.stopNote(i, synth); 
+                if (notePadsHeld & _BV(i)) {
+                    notePadsHeld &= ~_BV(i);
+                    // Tell the audio engine to trigger the release envelope for this pad
+                    audio.stopNote(i, synth);
+                    looper.logEvent(i, false);
+                }
             }
         }
         lastTouched = currTouched;
@@ -140,33 +143,21 @@ public:
         }
     }
 
-    bool hasNewAction() { return newActionReady; }
-    
-    int getLastPressedButton() {
-        newActionReady = false;
-        return lastPressedButton;
-    }
-
 private:
-    void handleButtonPress(int buttonId, SynthState& synth, Looper& looper) {
-        // Button 15 is the physical bottom-right key on a 4x4 matrix
-        if (buttonId == 15) {
-            isShiftHeld = true; 
-            Serial.println("Shift key engaged.");
-            return; // Exit early so we don't play a note for the shift key
-        }
-
+    void handleButtonPress(int buttonId, SynthState& synth, Looper& looper, AudioEngine& audio) {
         if (isShiftHeld) {
             switch (buttonId) {
                 case 1: synth.shiftOctave(1); break;
                 case 2: synth.shiftOctave(-1); break;
-                case 3: looper.toggleRecording(); break;
-                case 4: looper.togglePlayback(); break;
+                case 3: looper.toggleRecording(); break; // RECORD: Shift + Pad 3
+                case 4: looper.togglePlayback(); break;  // PLAY:   Shift + Pad 4
                 default: Serial.println("Shift Action: Unmapped button."); break;
             }
-        } else {
+        } else if (PADS[buttonId].role == ROLE_CHORD) {
             Serial.printf("Action: Playing note for Pad %d\n", buttonId);
-            looper.logEvent(buttonId);
+            audio.playPad(buttonId, synth);
+            looper.logEvent(buttonId, true);
+            notePadsHeld |= _BV(buttonId);
         }
     }
 };

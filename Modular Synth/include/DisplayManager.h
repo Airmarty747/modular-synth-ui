@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include "SynthState.h"
+#include "Looper.h"
 
 class DisplayManager {
 private:
@@ -35,12 +36,7 @@ public:
     }
 
     void update(const SynthState& synth, const Looper& looper) {
-        // Draw Looper Status in the corner
-        if (looper.getIsRecording()) {
-            u8g2.drawStr(100, 20, "REC");
-        } else if (looper.getIsPlaying()) {
-            u8g2.drawStr(100, 20, "PLAY");
-        }if (millis() - lastUpdate < refreshRate) return;
+        if (millis() - lastUpdate < refreshRate) return;
         lastUpdate = millis();
 
         u8g2.clearBuffer();
@@ -55,6 +51,14 @@ public:
 
         // Switch back to standard 8-pixel font for the details
         u8g2.setFont(u8g2_font_ncenB08_tr); 
+
+        // Looper status in the top-right corner (drawn after clearBuffer so it actually shows)
+        if (looper.getIsRecording()) {
+            // Blink the REC badge twice a second so it's obvious we're capturing
+            if ((millis() / 500) % 2 == 0) u8g2.drawStr(100, 20, "REC");
+        } else if (looper.getIsPlaying()) {
+            u8g2.drawStr(96, 20, "PLAY");
+        }
 
         // ROW 2: Octave & Instrument (Y=42)
         snprintf(buf, sizeof(buf), "Octave: %+d", synth.getOctaveOffset());
