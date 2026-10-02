@@ -18,15 +18,22 @@ Looper looper(&hardwareCache);
 DisplayManager screen; // <-- 2. Declare the screen object here
 AudioEngine audio;
 
-// 3. THE BOOT SEQUENCE
-void setup() {
-    Serial.begin(115200);
-    delay(1000);
+    // 1. Draw Header
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("--- POCKETCHORD ---");
+    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+
+    // 2. Draw Menu Item 0: Key Root
+    // If selected, invert colors (Black text on White background)
+    if (input.selectedMenuItem == 0) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    else display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
+    display.setCursor(0, 15);
+    display.printf("Root Key: %d  ", synth.getKeyRoot());
 
     // Initialize Hardware Managers
     screen.begin(); 
     input.begin();
-    share.begin();
 
     // Boots the FreeRTOS audio task and wakes up the amplifier
     audio.begin();
@@ -38,7 +45,7 @@ void setup() {
     Serial.println("Running in standalone hardware mode.");
 }
 
-// 4. THE ENGINE
+// --- The Master Engine ---
 void loop() {
     // STEP A: Read the physical world
     input.scanHardware(synth, audio); // Pass the synth state to allow joystick adjustments

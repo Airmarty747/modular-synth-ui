@@ -8,6 +8,11 @@
 #include "AudioEngine.h"
 
 class InputManager {
+public:
+    // Menu navigation variables for the OLED
+    int selectedMenuItem = 0;
+    const int MAX_MENU_ITEMS = 2; // 0=Root, 1=Scale, 2=Articulation
+
 private:
     Adafruit_MPR121 cap = Adafruit_MPR121();
     uint16_t lastTouched = 0;
@@ -142,7 +147,15 @@ public:
         return lastPressedButton;
     }
 
+private:
     void handleButtonPress(int buttonId, SynthState& synth, Looper& looper) {
+        // Button 15 is the physical bottom-right key on a 4x4 matrix
+        if (buttonId == 15) {
+            isShiftHeld = true; 
+            Serial.println("Shift key engaged.");
+            return; // Exit early so we don't play a note for the shift key
+        }
+
         if (isShiftHeld) {
             switch (buttonId) {
                 case 1: synth.shiftOctave(1); break;
