@@ -506,6 +506,18 @@ public:
         if (evtQ && xQueueSend(evtQ, &e, 0) != pdTRUE) statQueueFull = statQueueFull + 1;
     }
 
+    // One single note at a given (float, possibly microtonal) midi pitch. Used by the bench tests
+    // so a tuner can read one note at a time. Release it with stopNote(src).
+    void playTone(float midi, uint8_t inst, uint8_t src) {
+        AudioEvt e = {};
+        e.type     = EV_NOTE_ON;
+        e.src      = src;
+        e.inst     = inst;
+        e.count    = 1;
+        e.pitch[0] = midi;
+        if (evtQ && xQueueSend(evtQ, &e, 0) != pdTRUE) statQueueFull = statQueueFull + 1;
+    }
+
     // Releases every voice started with this source. In latch mode a pad release is ignored:
     // the chord is released by the next chord instead.
     void stopNote(uint8_t src) {
