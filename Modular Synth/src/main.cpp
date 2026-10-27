@@ -8,6 +8,9 @@
 #include "DummyMemory.h"
 #include "DisplayManager.h"
 #include "AudioEngine.h"
+#ifdef POCKETCHORD_TEST_CMDS
+#include "TestCommands.h"   // bench-test serial commands, only when built with -DPOCKETCHORD_TEST_CMDS
+#endif
 
 SynthState synth;
 InputManager input;
@@ -64,6 +67,10 @@ void loop() {
         if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
         else            audio.stopNote(src, synth);
     }
+
+#ifdef POCKETCHORD_TEST_CMDS
+    testCommandsPoll(synth, audio);
+#endif
 
     // STEP D: screen (only touches the I2C bus when something changed)
     screen.update(synth, looper);
