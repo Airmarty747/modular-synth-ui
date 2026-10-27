@@ -1,74 +1,80 @@
 #include <Arduino.h>
+#include <Wire.h>
 
-// 1. IMPORT BLUEPRINTS & TESTING LAYERS
 #include "SynthState.h"
 #include "InputManager.h"
 #include "Looper.h"
 #include "ShareManager.h"
 #include "DummyMemory.h"
-#include "DisplayManager.h" // <-- 1. Include the blueprint for the OLED Screen
-#include "AudioEngine.h"  // <-- 1. Include the audio engine
+#include "DisplayManager.h"
+#include "AudioEngine.h"
 
-// 2. GLOBAL INSTANTIATIONS
 SynthState synth;
 InputManager input;
 ShareManager share;
 DummyMemory hardwareCache;
 Looper looper(&hardwareCache);
-DisplayManager screen; // <-- 2. Declare the screen object here
+DisplayManager screen;
 AudioEngine audio;
 
-// 3. THE BOOT SEQUENCE
 void setup() {
     Serial.begin(115200);
-    // Serial goes out over the chip's built-in USB. If nothing is reading that
-    // port, a write will otherwise sit and wait for a reader, which makes the
-    // synth look dead when it is merely talking to nobody. Zero means never
-    // wait: unread output is dropped and the music carries on.
+    // Serial goes out over the built-in USB. With a timeout of zero, unread output is
+    // dropped instead of making the synth wait for a reader that is not there.
     Serial.setTxTimeoutMs(0);
     delay(1000);
     Serial.println();
     Serial.println("=== PocketChord starting ===");
 
-    // Initialize Hardware Managers
-    screen.begin(); 
+    // The one and only I2C setup. The OLED (0x3C) and the MPR121 (0x5A) share this bus,
+    // so it has to exist before either of them starts.
+    Wire.begin(40, 39);
+    Wire.setClock(400000);
+
+    screen.begin();
     input.begin();
     share.begin();
 
-    // Boots the FreeRTOS audio task and wakes up the amplifier
+    // Starts the audio task and wakes the amplifier (AudioEngine owns pin 47).
     audio.begin();
 
-    pinMode(47, OUTPUT);
-    digitalWrite(47, HIGH); // Pull HIGH to wake up the amplifier
-    
-    // Four notes on the way up, before anything is touched. If you hear these,
-    // the amplifier, the speaker and the I2S clocks are all good, and any
-    // silence afterwards belongs to the pads rather than the audio path.
     Serial.println("Boot chime: playing C E G C -- you should hear four notes.");
     audio.bootChime();
 
     Serial.println("PocketChord Boot Sequence Complete.");
-    Serial.println("Running in standalone hardware mode.");
-    Serial.println("Note pads are 5-11. Pads 0-4 are controls and stay silent.");
     Serial.println("Waiting for input...");
 }
 
-// --- The Master Engine ---
 void loop() {
-    // STEP A: Read the physical world (pads play notes, Shift + pads drive the Looper)
+    static uint32_t lastStatsMs = 0;
+    static uint32_t maxLoopUs = 0;
+    uint32_t loopStart = micros();
+
+    // STEP A: read the pads, shift and joystick
     input.scanHardware(synth, audio, looper);
 
-    // STEP B: Check for incoming shared tracks via aux cable
+    // STEP B: incoming tracks from the aux cable (non-blocking now)
     share.listenForIncomingTrack(looper);
-    
-    // STEP C: Send any due looper events to the audio engine on their own voices
+
+    // STEP C: due looper events go to the audio engine on their own voices
+    // (for now loops still follow the live key/scale; the sequencer rewrite changes that)
     LoopEvent evt;
     while (looper.updatePlayback(evt)) {
         uint8_t src = evt.buttonId + LOOP_VOICE_OFFSET;
         if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
         else            audio.stopNote(src, synth);
     }
-    
-    // STEP D: Update the UI
+
+    // STEP D: screen (only touches the I2C bus when something changed)
     screen.update(synth, looper);
+
+    // Health report every 2 s: audio CPU load and the slowest pass through loop().
+    uint32_t dt = micros() - loopStart;
+    if (dt > maxLoopUs) maxLoopUs = dt;
+    if (millis() - lastStatsMs >= 2000) {
+        lastStatsMs = millis();
+        audio.printStats();
+        Serial.printf("Main loop: slowest pass %u us\n", (unsigned)maxLoopUs);
+        maxLoopUs = 0;
+    }
 }
