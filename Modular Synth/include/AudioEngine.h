@@ -472,7 +472,11 @@ public:
         if (padId >= 12 || PADS[padId].role != ROLE_CHORD) return;
 
         NoteStyle style = synth.getNoteStyle();
-        if (src < 32) {
+        // Latch belongs to LIVE pads only (src 0-11). Looped chords (src 12+) always follow their
+        // own note-on/note-off, so loop playback can neither release a latched live chord nor
+        // be latched itself.
+        bool isLive = (src < LOOP_VOICE_OFFSET);
+        if (isLive) {
             if (style == STYLE_LATCH) { releaseLatched(); latchMask |= (1u << src); }
             else if (latchMask)       { releaseLatched(); }
         }
@@ -505,7 +509,7 @@ public:
     // Releases every voice started with this source. In latch mode a pad release is ignored:
     // the chord is released by the next chord instead.
     void stopNote(uint8_t src) {
-        if (src < 32 && (latchMask & (1u << src))) return;
+        if (src < LOOP_VOICE_OFFSET && (latchMask & (1u << src))) return;
         sendOff(src);
     }
     void stopNote(uint8_t src, const SynthState& /*synth*/) { stopNote(src); }   // v1-compatible signature
