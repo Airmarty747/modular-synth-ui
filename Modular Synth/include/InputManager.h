@@ -1,25 +1,35 @@
 #pragma once
+// InputManager.h -- v2 control layout. See the "PocketChord - Button Mapping" doc for the full table.
+//
+//   Pads, pressed alone:   0 Western/Indian   1 key +1   2 next instrument   3 next scale   4 note style
+//                          5-11 chords
+//   Left bumper (Shift) + pad:  0 strum   1 octave up   2 octave down   3 record   4 play/stop   5 articulation
+//   Joystick:              12-way key select; with Shift: Up/Down BPM +/-5, Left/Right previous/next scale
+//   Right bumper (GPIO 4): hold = the loop follows the live key / scale / instrument (re-harmonize)
+//
+// Loops stay fixed: when recording starts, the synth state is copied, and loop playback uses that copy
+// (its key, scale, tradition, octave, instrument, strum) unless the right bumper is held. That is also what
+// lets a loop in one tradition play while you play live in the other.
+//
+// The MPR121 is driven by direct register writes (the Adafruit library's begin() gives up if one register
+// does not read back exactly, and leaves the chip stopped). Everything about the chip is unchanged from the
+// version that was working on the hardware.
+
 #include <Arduino.h>
 #include <Wire.h>
-#include <math.h> // For joystick trigonometry
+#include <math.h>
 #include "SynthState.h"
 #include "Looper.h"
 #include "AudioEngine.h"
+#include "UiState.h"
 
 class InputManager {
 public:
-    // Menu navigation variables for the OLED
+    // kept from the previous version so nothing that referenced them breaks
     int selectedMenuItem = 0;
-    const int MAX_MENU_ITEMS = 2; // 0=Root, 1=Scale, 2=Articulation
+    const int MAX_MENU_ITEMS = 2;
 
 private:
-    // The MPR121 is driven by direct register writes rather than through
-    // Adafruit_MPR121. That library's begin() reads CONFIG2 after the soft
-    // reset and refuses to continue unless it reads back exactly 0x24 -- and
-    // when it refuses it has already parked the chip in stop mode with every
-    // electrode disabled, so touched() then returns 0 forever. The sketch that
-    // works on this hardware writes the registers blindly and never asks the
-    // chip to prove its identity, so that is what happens here too.
     static const uint8_t MPR_ADDR       = 0x5A;
     static const uint8_t R_TOUCH_STATUS = 0x00;
     static const uint8_t R_DEBOUNCE     = 0x5B;
@@ -38,10 +48,8 @@ private:
         return Wire.endTransmission() == 0;
     }
 
-    // endTransmission(false) keeps the bus held for a repeated START. Sending a
-    // STOP instead makes the MPR121 rewind its address pointer to 0x00, after
-    // which every read quietly comes back as touch status whatever you asked
-    // for -- which looks exactly like pads that never change.
+    // endTransmission(false) keeps the bus held for a repeated START; a STOP makes the MPR121 rewind its
+    // address pointer to 0x00 and every read then comes back as touch status.
     int mprRead16(uint8_t reg) {
         Wire.beginTransmission(MPR_ADDR);
         Wire.write(reg);
@@ -76,46 +84,51 @@ private:
         return true;
     }
 
-    // Hardware Pins based on your config.h
-    const int pinVrx = 1;
-    const int pinVry = 2;
-    // The stick module is mounted so that both axes read backwards: pushing up
-    // raises the reading instead of lowering it, and right lowers it instead of
-    // raising it. The radial maths below is written expecting the opposite, so
-    // both axes are flipped at the point of reading. Set either to false if the
-    // module is ever remounted the other way up.
+    // --- pins ---
+    const int pinVrx    = 1;
+    const int pinVry    = 2;
+    const int pinShift  = 41;   // left bumper
+    const int pinReharm = 4;    // right bumper
+    // The stick module reads both axes backwards (up raises the reading, right lowers it), so both are
+    // flipped where they are read. Set either to false if the module is remounted the other way up.
     const bool invertX = true;
     const bool invertY = true;
-    const int pinShift = 41;
+
+    // --- debounced buttons (active low, internal pull-ups) ---
+    struct Debounced { bool stable = false; bool raw = false; uint32_t since = 0; };
+    static bool debounce(Debounced& d, bool rawNow, uint32_t now, uint32_t ms = 25) {
+        if (rawNow != d.raw) { d.raw = rawNow; d.since = now; }
+        if (d.raw != d.stable && now - d.since >= ms) d.stable = d.raw;
+        return d.stable;
+    }
+    Debounced dbShift, dbReharm;
 
     bool isShiftHeld = false;
-    
-    // Radial Joystick Variables
-    const int deadzone = 900;
-    int lastRadialKey = -1; // Tracks which of the 12 pie slices we are currently pointing at
-    
-    // Cooldown for shifted up/down actions (like BPM)
-    uint32_t lastJoyTrigger = 0;
-    const unsigned long joyCooldown = 250; 
+    bool reharmonize = false;
 
-    // Pads that started a live note, so their release always sends a note-off
-    // (even if Shift was pressed in between) and gets recorded by the Looper
+    // --- loop snapshot (loops stay fixed) ---
+    SynthState loopSnap;
+    bool haveSnap = false;
+
+    // --- joystick ---
+    const int deadzone = 900;
+    int lastRadialKey = -1;            // which of the 12 slices we are in
+    uint32_t lastJoyTrigger = 0;       // cooldown for shifted actions
+    const unsigned long joyCooldown = 250;
+
+    // Pads that started a live note, so their release always sends a note-off (even if Shift was pressed
+    // in between) and gets recorded by the Looper.
     uint16_t notePadsHeld = 0;
 
 public:
     InputManager() {}
 
     void begin() {
-        // Configure Shift Button (Uses internal pullup, goes LOW when pressed)
         pinMode(pinShift, INPUT_PULLUP);
-
-        // Configure Joystick Precision
+        pinMode(pinReharm, INPUT_PULLUP);
         analogReadResolution(12);
 
-        // Initialize MPR121 Capacitive Touch on I2C address 0x5A.
-        // DisplayManager already called Wire.begin(40, 39), so the bus is up;
-        // 400 kHz is what the working sketch runs it at and the MPR121 and the
-        // OLED are both happy there.
+        // Wire.begin(40, 39) has already been called in setup(). 400 kHz suits both the MPR121 and the OLED.
         Wire.setClock(400000);
 
         padsOk = mprInit();
@@ -133,32 +146,33 @@ public:
     void scanHardware(SynthState& synth, AudioEngine& audio, Looper& looper) {
         uint32_t now = millis();
 
-        // 1. SCAN SHIFT BUTTON (Physical Pin 41)
-        bool currentShift = (digitalRead(pinShift) == LOW);
-        if (currentShift != isShiftHeld) {
-            isShiftHeld = currentShift;
+        // 1. LEFT BUMPER (Shift) and RIGHT BUMPER (re-harmonize), both debounced
+        bool shiftNow = debounce(dbShift, digitalRead(pinShift) == LOW, now);
+        if (shiftNow != isShiftHeld) {
+            isShiftHeld = shiftNow;
             Serial.println(isShiftHeld ? "Shift key engaged." : "Shift key released.");
         }
+        bool rhNow = debounce(dbReharm, digitalRead(pinReharm) == LOW, now);
+        if (rhNow != reharmonize) {
+            reharmonize = rhNow;
+            Serial.println(reharmonize ? "Re-harmonize ON: the loop follows the live key and scale." : "Re-harmonize OFF: the loop is back in its own key and scale.");
+        }
 
-      // 2. SCAN MPR121 CAPACITIVE KEYPAD (12 Electrodes)
+        // 2. MPR121 PADS
         if (!padsOk) return;
         int rawTouch = mprRead16(R_TOUCH_STATUS);
-        // A failed read is not the same as nothing being held: treating -1 as
-        // "all released" would fire a note-off for every pad under your finger.
+        // A failed read is not "everything released": treating -1 that way would fire a note-off for every held pad.
         if (rawTouch < 0) return;
         uint16_t currTouched = (uint16_t)(rawTouch & 0x0FFF);
         for (uint8_t i = 0; i < 12; i++) {
-            // Note ON (Newly Touched)
             if ((currTouched & _BV(i)) && !(lastTouched & _BV(i))) {
-                Serial.printf("InputManager: Pad %d PRESSED\n", i); // Confirm the press
+                Serial.printf("InputManager: Pad %d PRESSED\n", i);
                 handleButtonPress(i, synth, looper, audio);
             }
-            // Note OFF (Newly Released)
             else if (!(currTouched & _BV(i)) && (lastTouched & _BV(i))) {
-                Serial.printf("InputManager: Pad %d RELEASED\n", i); // Confirm the release
+                Serial.printf("InputManager: Pad %d RELEASED\n", i);
                 if (notePadsHeld & _BV(i)) {
                     notePadsHeld &= ~_BV(i);
-                    // Tell the audio engine to trigger the release envelope for this pad
                     audio.stopNote(i, synth);
                     looper.logEvent(i, false);
                 }
@@ -166,20 +180,18 @@ public:
         }
         lastTouched = currTouched;
 
-        // 3. SCAN ANALOG JOYSTICK (Radial Math)
+        // 3. JOYSTICK
         int rawX = analogRead(pinVrx) - 2048;
         int rawY = analogRead(pinVry) - 2048;
         if (invertX) rawX = -rawX;
         if (invertY) rawY = -rawY;
-
         handleJoystick(rawX, rawY, synth, now);
     }
 
     void handleJoystick(int rawX, int rawY, SynthState& synth, uint32_t now) {
-        // Calculate magnitude (distance from center)
-        float magnitude = sqrt(pow(rawX, 2) + pow(rawY, 2));
-        
-        // If stick is in the center deadzone, reset the tracker and exit
+        float magnitude = sqrt((float)rawX * rawX + (float)rawY * rawY);
+
+        // In the centre dead zone: forget the slice so the next push registers, and re-arm the cooldown.
         if (magnitude < deadzone) {
             lastRadialKey = -1;
             lastJoyTrigger = 0;
@@ -187,33 +199,25 @@ public:
         }
 
         if (isShiftHeld) {
-            // SHIFT + JOYSTICK = Standard Up/Down/Left/Right control
+            // SHIFT + stick: Up/Down = BPM +/-5, Left/Right = previous/next scale. Only the stronger axis counts,
+            // so a diagonal push does one thing instead of two.
             if (now - lastJoyTrigger > joyCooldown) {
-                if (rawY < -deadzone) synth.setBpm(synth.getBpm() + 5);      // UP
-                if (rawY > deadzone)  synth.setBpm(synth.getBpm() - 5);      // DOWN
-                if (rawX > deadzone)  synth.setScale("major");               // RIGHT
-                if (rawX < -deadzone) synth.setScale("minor");               // LEFT
+                int ay = rawY < 0 ? -rawY : rawY, ax = rawX < 0 ? -rawX : rawX;
+                if (ay >= ax) {
+                    if (rawY < 0) synth.setBpm(synth.getBpm() + 5);        // UP
+                    else          synth.setBpm(synth.getBpm() - 5);        // DOWN
+                } else {
+                    synth.cycleScale(rawX > 0 ? +1 : -1);                  // RIGHT = next, LEFT = previous
+                }
                 lastJoyTrigger = now;
             }
         } else {
-            // UN-SHIFTED = 12-Slice Radial Key Selection
-            
-            // atan2 returns radians. Convert to degrees.
-            float angle = atan2(rawY, rawX) * 180.0 / PI;
-
-            // Standard math puts 0 degrees at "Right". 
-            // We add 90 degrees so 0 degrees points straight "Up".
-            // (Assuming rawY goes negative when pushed UP based on your config.h inverted Y axis)
-            angle += 90.0; 
-            
-            // Normalize negative angles to 0-360
-            if (angle < 0) angle += 360.0;
-
-            // Divide 360 degrees into 12 slices of 30 degrees each
-            int slice = round(angle / 30.0);
-            if (slice >= 12) slice = 0; // Wrap 360 degrees back to 0 (Up)
-
-            // Only trigger if we entered a new 30-degree zone to prevent spamming
+            // 12-slice key selection: atan2 gives degrees with 0 at "right"; +90 puts 0 at "up".
+            float angle = atan2((float)rawY, (float)rawX) * 180.0f / PI;
+            angle += 90.0f;
+            if (angle < 0) angle += 360.0f;
+            int slice = (int)roundf(angle / 30.0f);
+            if (slice >= 12) slice = 0;
             if (slice != lastRadialKey) {
                 synth.setKey(slice);
                 lastRadialKey = slice;
@@ -221,21 +225,60 @@ public:
         }
     }
 
+    // What the display needs.
+    UiState getUiState() const {
+        UiState u;
+        u.shift       = isShiftHeld;
+        u.reharmonize = reharmonize;
+        u.loopHas     = haveSnap;
+        u.loopKey     = loopSnap.getKeyRoot();
+        u.loopScale   = loopSnap.getScaleIndex();
+        return u;
+    }
+
+    // The settings the looper's notes should be played with: the snapshot taken when the loop was
+    // recorded, or the live settings while the right bumper is held (or if there is no snapshot).
+    const SynthState& loopVoiceState(const SynthState& live) const {
+        return (reharmonize || !haveSnap) ? live : loopSnap;
+    }
+
 private:
-    void handleButtonPress(int buttonId, SynthState& synth, Looper& looper, AudioEngine& audio) {
+    void handleButtonPress(int pad, SynthState& synth, Looper& looper, AudioEngine& audio) {
         if (isShiftHeld) {
-            switch (buttonId) {
-                case 1: synth.shiftOctave(1); break;
-                case 2: synth.shiftOctave(-1); break;
-                case 3: looper.toggleRecording(); break; // RECORD: Shift + Pad 3
-                case 4: looper.togglePlayback(); break;  // PLAY:   Shift + Pad 4
+            switch (pad) {
+                case 0: synth.cycleStrum(); break;                          // Shift + 0: strum speed
+                case 1: synth.shiftOctave(1); break;                        // Shift + 1: octave up
+                case 2: synth.shiftOctave(-1); break;                       // Shift + 2: octave down
+                case 3:                                                     // Shift + 3: record
+                    looper.toggleRecording();
+                    if (looper.getIsRecording()) {                          // a new take: remember how it was played
+                        loopSnap = synth;
+                        haveSnap = true;
+                        Serial.println("Loop snapshot taken (key, scale, octave, instrument, strum).");
+                    }
+                    break;
+                case 4: looper.togglePlayback(); break;                     // Shift + 4: play / stop
+                case 5: synth.cycleArticulation(+1); break;                 // Shift + 5: articulation
                 default: Serial.println("Shift Action: Unmapped button."); break;
             }
-        } else if (PADS[buttonId].role == ROLE_CHORD) {
-            Serial.printf("Action: Playing note for Pad %d\n", buttonId);
-            audio.playPad(buttonId, synth);
-            looper.logEvent(buttonId, true);
-            notePadsHeld |= _BV(buttonId);
+            return;
+        }
+
+        if (PADS[pad].role == ROLE_CHORD) {
+            Serial.printf("Action: Playing note for Pad %d\n", pad);
+            audio.playPad(pad, synth);
+            looper.logEvent(pad, true);
+            notePadsHeld |= _BV(pad);
+            return;
+        }
+
+        switch (pad) {                                                      // control pads, pressed alone
+            case 0: synth.toggleTradition(); break;                         // Western <-> Indian
+            case 1: synth.setKey(synth.getKeyRoot() + 1); break;            // key up one semitone
+            case 2: synth.cycleInstrument(+1); break;                       // next instrument
+            case 3: synth.cycleScale(+1); break;                            // next scale in this tradition
+            case 4: synth.cycleNoteStyle(); break;                          // Gated / Fixed / Latch
+            default: break;
         }
     }
 };
