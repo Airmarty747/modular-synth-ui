@@ -14,6 +14,7 @@
 #include <string.h>
 #include "SynthState.h"
 #include "Looper.h"
+#include "UiState.h"
 
 class DisplayManager {
 private:
@@ -24,6 +25,7 @@ private:
     // Everything that appears on screen, so two snapshots can be compared byte for byte.
     struct Snap {
         int32_t key, scale, octave, inst, bpm, art10, rec, play, blink;
+        int32_t style, strum, shift, rehar, loopHas, loopKey, loopScale;
     };
     Snap last;
     bool haveDrawn = false;
@@ -73,7 +75,7 @@ public:
         u8g2.sendBuffer();
     }
 
-    void update(const SynthState& synth, const Looper& looper) {
+    void update(const SynthState& synth, const Looper& looper, const UiState& ui = UiState()) {
         unsigned long nowMs = millis();
         if (nowMs - lastCheck < checkInterval) return;
         lastCheck = nowMs;
@@ -89,6 +91,13 @@ public:
         s.rec   = looper.getIsRecording() ? 1 : 0;
         s.play  = looper.getIsPlaying() ? 1 : 0;
         s.blink = s.rec ? (int32_t)((nowMs / 500) % 2) : 0;
+        s.style = synth.getNoteStyle();
+        s.strum = synth.getStrumMs();
+        s.shift = ui.shift ? 1 : 0;
+        s.rehar = ui.reharmonize ? 1 : 0;
+        s.loopHas = ui.loopHas ? 1 : 0;
+        s.loopKey = ui.loopKey;
+        s.loopScale = ui.loopScale;
 
         if (haveDrawn && memcmp(&s, &last, sizeof(s)) == 0) return;   // nothing changed: leave the bus alone
         last = s;
@@ -108,6 +117,21 @@ public:
         } else if (s.play) {
             u8g2.drawStr(100, 20, "PLAY");
         }
+
+        if (s.shift) u8g2.drawStr(112, 9, "SH");
+
+        // STATUS LINE (small): while a loop plays it says what the loop is in; otherwise the note settings
+        u8g2.setFont(u8g2_font_5x7_tr);
+        if (s.play && s.loopHas) {
+            if (s.rehar) snprintf(buf, sizeof(buf), "LOOP follows live key");
+            else         snprintf(buf, sizeof(buf), "LOOP %s %s", getNoteName(s.loopKey), SCALES[s.loopScale].name);
+        } else {
+            const char* styleName = (s.style == STYLE_FIXED) ? "Fixed" : (s.style == STYLE_LATCH) ? "Latch" : "Gated";
+            snprintf(buf, sizeof(buf), "%s  Strum %d  %s", styleName, (int)s.strum,
+                     SCALES[s.scale].trad == TRAD_INDIAN ? "Indian" : "Western");
+        }
+        u8g2.drawStr(0, 32, buf);
+        u8g2.setFont(u8g2_font_ncenB08_tr);
 
         // ROW 2: octave and instrument name
         snprintf(buf, sizeof(buf), "Oct %+d", s.octave);

@@ -70,12 +70,14 @@ void loop() {
     share.listenForIncomingTrack(looper);
 
     // STEP C: due looper events go to the audio engine on their own voices
-    // (for now loops still follow the live key/scale; the sequencer rewrite changes that)
+    // The loop plays in the settings it was recorded with (key, scale, instrument...), unless the right
+    // bumper is held, in which case it follows the live settings.
+    const SynthState& loopState = input.loopVoiceState(synth);
     LoopEvent evt;
     while (looper.updatePlayback(evt)) {
         uint8_t src = evt.buttonId + LOOP_VOICE_OFFSET;
-        if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
-        else            audio.stopNote(src, synth);
+        if (evt.noteOn) audio.playPad(evt.buttonId, loopState, src);
+        else            audio.stopNote(src, loopState);
     }
 
 #ifdef POCKETCHORD_TEST_CMDS
@@ -83,7 +85,7 @@ void loop() {
 #endif
 
     // STEP D: screen (only touches the I2C bus when something changed)
-    screen.update(synth, looper);
+    screen.update(synth, looper, input.getUiState());
 
     // Health report every 2 s: audio CPU load and the slowest pass through loop().
     uint32_t dt = micros() - loopStart;

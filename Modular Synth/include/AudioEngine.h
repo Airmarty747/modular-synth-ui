@@ -18,6 +18,18 @@
 //  * Public API is unchanged, so the existing InputManager / main loop still compile:
 //      playPad(pad, synth), playPad(pad, synth, src), stopNote(src, synth), bootChime().
 
+// v2.1 (after the first real-hardware numbers: about 4% of the audio budget per voice, so a 6-chord
+//  press needed over 100% and, at priority 5 on the same core as loop(), froze the whole synth):
+//  * audio now runs on core 0 (nothing else uses it), the Arduino loop() keeps core 1 to itself
+//  * it renders only the voices that are actually active (idle cost was 5%, from scanning 32 slots per sample)
+//  * LOAD SHEDDING: if blocks keep taking over 85% of their time, the OLDEST whole chord is faded out
+//    instead of letting the audio run late; shed events are counted in printStats()
+//  * if a block ever overruns it sleeps one tick, so the idle task and the watchdog always get CPU
+//  * the hot code is compiled with -O2 (PlatformIO's default is -Os, which is slower for this loop)
+
+#pragma GCC push_options
+#pragma GCC optimize ("O2")
+
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <math.h>
@@ -44,6 +56,12 @@
 #define LITE_LOOP_VOICES 0      // set to 1 to render looped chords with one oscillator and no sub (cheaper)
 #endif
 #define LOOP_VOICE_OFFSET 12    // looper playback uses sources 12-23 so it never cuts off live pads 0-11
+#ifndef AUDIO_CORE
+#define AUDIO_CORE 0            // core for the audio task; the Arduino loop() runs on core 1
+#endif
+#ifndef AUDIO_SHED_PCT
+#define AUDIO_SHED_PCT 85       // shed a chord when blocks keep taking longer than this % of their time budget
+#endif
 #define PEND_MAX 4              // chords that may wait for voices at once
 const float TWO_PI_F = 2.0f * PI;
 
@@ -73,6 +91,8 @@ struct AudioEvt {
 struct Voice {
     bool active, fast, autoFree, isBass;
     uint8_t src;
+    uint32_t startBlk;   // audio block number at note-on, used to find the oldest chord
+    float pitch;         // midi pitch (float) this voice was started at
     Wave wave;
     uint8_t oscCount;
     int32_t delay;       // samples left before this voice starts sounding (strum)
@@ -104,7 +124,9 @@ private:
 
     // CPU / health counters, written by the audio task, read by printStats().
     volatile uint32_t statBlocks = 0, statSumUs = 0, statMaxUs = 0, statOver = 0;
-    volatile uint32_t statPeakVoices = 0, statStolen = 0, statDropped = 0, statQueueFull = 0;
+    volatile uint32_t statPeakVoices = 0, statStolen = 0, statDropped = 0, statQueueFull = 0, statShed = 0;
+    uint32_t blockNo = 0;      // audio task only
+    int overRun = 0;           // consecutive heavy blocks, audio task only
 
     static const uint16_t SINE_BITS = 10;
     static const uint16_t SINE_LEN  = 1 << SINE_BITS;
@@ -151,6 +173,8 @@ private:
         v.active   = true;
         v.fast     = false;
         v.src      = src;
+        v.startBlk = blockNo;
+        v.pitch    = pitch;
         v.isBass   = isBass;
         v.delay    = delaySamples;
         v.gateLeft = gateSamples;
@@ -256,7 +280,34 @@ private:
 
     // --- CHORD ALLOCATION (audio task only) ---
 
-    // Fade out whole chords, quietest first, until enough voices are free or fading.
+    // Fade out ONE whole chord (every voice with the same src) and return how many voices it had.
+    // oldestFirst picks the chord that started longest ago (used for load shedding, so the chord the
+    // player has just pressed is never the one that disappears); otherwise the quietest chord (pool full).
+    int fadeChord(bool oldestFirst) {
+        int bestSrc = -1, bestN = 0;
+        float bestKey = 1e30f;
+        for (int i = 0; i < MAX_VOICES; i++) {
+            if (!voices[i].active || voices[i].fast) continue;
+            bool seen = false;
+            for (int j = 0; j < i; j++)
+                if (voices[j].active && !voices[j].fast && voices[j].src == voices[i].src) { seen = true; break; }
+            if (seen) continue;
+            float sum = 0.0f; int n = 0; uint32_t oldest = 0xFFFFFFFFu;
+            for (int k = 0; k < MAX_VOICES; k++)
+                if (voices[k].active && !voices[k].fast && voices[k].src == voices[i].src) {
+                    sum += voices[k].env; n++;
+                    if (voices[k].startBlk < oldest) oldest = voices[k].startBlk;
+                }
+            float key = oldestFirst ? (float)oldest : sum;
+            if (key < bestKey) { bestKey = key; bestSrc = voices[i].src; bestN = n; }
+        }
+        if (bestSrc < 0) return 0;
+        for (int k = 0; k < MAX_VOICES; k++)
+            if (voices[k].active && !voices[k].fast && voices[k].src == bestSrc) voiceFastFade(voices[k]);
+        return bestN;
+    }
+
+    // Make room for `needed` voices by fading whole chords, quietest first.
     void stealFor(int needed) {
         int freeN = 0, fading = 0;
         for (int i = 0; i < MAX_VOICES; i++) {
@@ -265,24 +316,10 @@ private:
         }
         int deficit = needed - freeN - fading;
         while (deficit > 0) {
-            int bestSrc = -1, bestN = 0;
-            float bestSum = 1e9f;
-            for (int i = 0; i < MAX_VOICES; i++) {
-                if (!voices[i].active || voices[i].fast) continue;
-                bool seen = false;
-                for (int j = 0; j < i; j++)
-                    if (voices[j].active && !voices[j].fast && voices[j].src == voices[i].src) { seen = true; break; }
-                if (seen) continue;
-                float sum = 0.0f; int n = 0;
-                for (int k = 0; k < MAX_VOICES; k++)
-                    if (voices[k].active && !voices[k].fast && voices[k].src == voices[i].src) { sum += voices[k].env; n++; }
-                if (sum < bestSum) { bestSum = sum; bestSrc = voices[i].src; bestN = n; }
-            }
-            if (bestSrc < 0) break;
-            for (int k = 0; k < MAX_VOICES; k++)
-                if (voices[k].active && !voices[k].fast && voices[k].src == bestSrc) voiceFastFade(voices[k]);
+            int n = fadeChord(false);
+            if (n == 0) break;
             statStolen = statStolen + 1;
-            deficit -= bestN;
+            deficit -= n;
         }
     }
 
@@ -348,10 +385,13 @@ private:
 
             uint32_t t0 = micros();
 
-            uint32_t nActive = 0;
+            // Collect the active voices once per block (and update their filters), so the sample loop
+            // only visits voices that are really sounding instead of scanning all MAX_VOICES slots.
+            int act[MAX_VOICES];
+            int nActive = 0;
             for (int i = 0; i < MAX_VOICES; i++) {
                 if (!voices[i].active) continue;
-                nActive++;
+                act[nActive++] = i;
                 voices[i].fCut += (voices[i].fTarget - voices[i].fCut) * (1.0f - voices[i].fCoefBlk);
                 float g = 1.0f - expf(-TWO_PI_F * voices[i].fCut / (float)SAMPLE_RATE);
                 voices[i].fG = (g > 0.95f) ? 0.95f : g;
@@ -359,8 +399,10 @@ private:
 
             for (int i = 0; i < AUDIO_FRAMES; i++) {
                 float mix = 0.0f;
-                for (int vI = 0; vI < MAX_VOICES; vI++)
-                    if (voices[vI].active) mix += voiceRender(voices[vI]);
+                for (int k = 0; k < nActive; k++) {
+                    Voice& v = voices[act[k]];
+                    if (v.active) mix += voiceRender(v);
+                }
                 mix *= globalVolume;
 
                 float a = fabsf(mix);
@@ -374,12 +416,31 @@ private:
                 buf[i * 2 + 1] = o;
             }
 
+#ifdef AUDIO_TEST_EXTRA_US_PER_VOICE
+            // Host tests only: pretend each voice costs this many extra microseconds per block.
+            { uint32_t until = micros() + (uint32_t)nActive * AUDIO_TEST_EXTRA_US_PER_VOICE; while ((int32_t)(micros() - until) < 0) {} }
+#endif
+
             uint32_t dt = micros() - t0;
+            blockNo++;
             statBlocks = statBlocks + 1;
             statSumUs  = statSumUs + dt;
             if (dt > statMaxUs) statMaxUs = dt;
             if (dt > BUDGET_US) statOver = statOver + 1;
-            if (nActive > statPeakVoices) statPeakVoices = nActive;
+            if ((uint32_t)nActive > statPeakVoices) statPeakVoices = nActive;
+
+            // Load shedding: two heavy blocks in a row -> fade the oldest whole chord.
+            if (dt * 100 > BUDGET_US * AUDIO_SHED_PCT) {
+                if (++overRun >= 2) {
+                    if (fadeChord(true) > 0) statShed = statShed + 1;
+                    overRun = 0;
+                }
+            } else if (overRun > 0) {
+                overRun--;
+            }
+            // A block that overran leaves nothing for other tasks: sleep one tick so the idle task
+            // (and the watchdog) always get time, whatever the load.
+            if (dt > BUDGET_US) vTaskDelay(1);
 
             size_t written;
             i2s_write(I2S_NUM_0, buf, AUDIO_FRAMES * 2 * sizeof(int16_t), &written, portMAX_DELAY);
@@ -437,9 +498,9 @@ public:
 
         evtQ = xQueueCreate(64, sizeof(AudioEvt));
 
-        // Priority 5 on core 1: above the Arduino loop task (priority 1), so a slow screen
-        // update can never delay a buffer. The task sleeps inside i2s_write, so loop() still runs.
-        xTaskCreatePinnedToCore(audioTaskWrapper, "AudioTask", 8192, this, 5, NULL, 1);
+        // Core 0 (AUDIO_CORE): the Arduino loop() runs on core 1, so audio and the main loop can never
+        // starve each other. If you later add Bluetooth, its tasks also live on core 0 and will compete.
+        xTaskCreatePinnedToCore(audioTaskWrapper, "AudioTask", 8192, this, 5, NULL, AUDIO_CORE);
 
         Serial.println("AudioEngine v2: polyphonic synth booted.");
     }
@@ -536,11 +597,11 @@ public:
         const float budget = (float)AUDIO_FRAMES * 1000000.0f / (float)SAMPLE_RATE;
         float avgPct = 100.0f * ((float)statSumUs / (float)blocks) / budget;
         float maxPct = 100.0f * (float)statMaxUs / budget;
-        Serial.printf("Audio: CPU avg %.0f%% max %.0f%% | peak voices %u/%d | over-budget blocks %u | stolen %u dropped %u queue-full %u\n",
+        Serial.printf("Audio: CPU avg %.0f%% max %.0f%% | peak voices %u/%d | over-budget blocks %u | stolen %u shed %u dropped %u queue-full %u\n",
                       avgPct, maxPct, (unsigned)statPeakVoices, MAX_VOICES, (unsigned)statOver,
-                      (unsigned)statStolen, (unsigned)statDropped, (unsigned)statQueueFull);
+                      (unsigned)statStolen, (unsigned)statShed, (unsigned)statDropped, (unsigned)statQueueFull);
         statBlocks = 0; statSumUs = 0; statMaxUs = 0; statOver = 0; statPeakVoices = 0;
-        statStolen = 0; statDropped = 0; statQueueFull = 0;
+        statStolen = 0; statShed = 0; statDropped = 0; statQueueFull = 0;
     }
 
     // Debug helpers (used by the host tests; harmless on hardware).
@@ -548,6 +609,12 @@ public:
         int n = 0;
         for (int i = 0; i < MAX_VOICES; i++) if (voices[i].active) n++;
         return n;
+    }
+    // Midi pitch of the n-th active voice owned by `src` (debug / tests); -1 if there is none.
+    float voicePitch(uint8_t src, int n) const {
+        for (int i = 0; i < MAX_VOICES; i++)
+            if (voices[i].active && voices[i].src == src && n-- == 0) return voices[i].pitch;
+        return -1.0f;
     }
     // Voices owned by `src`. With soundingOnly, strummed voices that have not started yet are skipped.
     int voicesForSrc(uint8_t src, bool soundingOnly = false) const {
@@ -557,3 +624,5 @@ public:
         return n;
     }
 };
+
+#pragma GCC pop_options
