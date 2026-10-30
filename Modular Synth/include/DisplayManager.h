@@ -36,8 +36,34 @@ private:
 public:
     DisplayManager() : u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE) {}
 
+    // True if something acknowledges at this 7-bit I2C address.
+    static bool i2cProbe(uint8_t addr) {
+        Wire.beginTransmission(addr);
+        return Wire.endTransmission() == 0;
+    }
+
     void begin() {
         // Wire.begin(SDA, SCL) must already have been called (see main.cpp).
+
+        // Boot diagnostics: list everything on the bus, so a blank screen can be told apart from
+        // a wiring fault (nothing answers), a wrong address, or a pin problem (only some parts answer).
+        Serial.print("I2C scan (SDA 40, SCL 39):");
+        int found = 0;
+        for (uint8_t a = 1; a < 127; a++) {
+            if (i2cProbe(a)) { Serial.printf(" 0x%02X", a); found++; }
+        }
+        Serial.println(found ? "" : " nothing answered");
+        bool oled3C = i2cProbe(0x3C), oled3D = i2cProbe(0x3D);
+        Serial.printf("OLED at 0x3C: %s, at 0x3D: %s, MPR121 at 0x5A: %s\n",
+                      oled3C ? "yes" : "no", oled3D ? "yes" : "no", i2cProbe(0x5A) ? "yes" : "no");
+        // Many 2.42" SSD1309 modules ship set to 0x3D. U8g2 assumes 0x3C and then fails silently.
+        if (!oled3C && oled3D) {
+            u8g2.setI2CAddress(0x3D << 1);
+            Serial.println("DisplayManager: OLED found at 0x3D, using that address.");
+        } else if (!oled3C) {
+            Serial.println("DisplayManager: no OLED answered at 0x3C or 0x3D. Check SDA 40 / SCL 39, 3V3, GND, and the module's I2C/SPI selector.");
+        }
+
         u8g2.begin();
         u8g2.setBusClock(400000);
         u8g2.clearBuffer();
