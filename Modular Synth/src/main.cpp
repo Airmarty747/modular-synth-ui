@@ -25,7 +25,10 @@ void setup() {
     // Serial goes out over the built-in USB. With a timeout of zero, unread output is
     // dropped instead of making the synth wait for a reader that is not there.
     Serial.setTxTimeoutMs(0);
-    delay(1000);
+    // The USB serial port re-appears after every reset, so a monitor that is already open
+    // misses the first lines. Wait up to 4 s for it to connect so the boot messages are caught.
+    for (uint32_t t0 = millis(); !Serial && millis() - t0 < 4000; ) delay(10);
+    delay(500);
     Serial.println();
     Serial.println("=== PocketChord starting ===");
 
