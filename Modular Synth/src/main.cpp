@@ -62,12 +62,12 @@ void loop() {
     // STEP B: incoming tracks from the aux cable (non-blocking now)
     share.listenForIncomingTrack(looper);
 
-    // STEP C: due looper events go to the audio engine on their own voices
-    // (for now loops still follow the live key/scale; the sequencer rewrite changes that)
+    // STEP C: due looper events go to the audio engine on their own voices. They play with the
+    // settings saved when the loop was recorded, or the live ones while the right bumper is held.
     LoopEvent evt;
     while (looper.updatePlayback(evt)) {
         uint8_t src = evt.buttonId + LOOP_VOICE_OFFSET;
-        if (evt.noteOn) audio.playPad(evt.buttonId, synth, src);
+        if (evt.noteOn) audio.playPad(evt.buttonId, input.loopVoiceState(synth), src);
         else            audio.stopNote(src, synth);
     }
 
@@ -76,7 +76,7 @@ void loop() {
 #endif
 
     // STEP D: screen (only touches the I2C bus when something changed)
-    screen.update(synth, looper);
+    screen.update(synth, looper, input.getUiState());
 
     // Health report every 2 s: audio CPU load and the slowest pass through loop().
     uint32_t dt = micros() - loopStart;
